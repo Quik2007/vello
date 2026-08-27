@@ -20,7 +20,7 @@ use usvg::{Node, Paint, PaintOrder};
 use vello_cpu::color::AlphaColor;
 use vello_cpu::kurbo::{Affine, BezPath, Stroke};
 use vello_cpu::peniko::Fill;
-use vello_cpu::{Level, Pixmap, RenderContext, RenderSettings, Resources};
+use vello_cpu::{Level, PixelBufferOptions, Pixmap, RenderContext, RenderSettings, Resources};
 
 fn main() {
     let args = Args::parse();
@@ -68,14 +68,17 @@ fn main() {
 }
 
 fn write_pixmap(pixmap: &mut Pixmap) {
-    let data = pixmap.clone().take_unpremultiplied();
+    let data = pixmap
+        .clone()
+        .take(PixelBufferOptions::UNPREMULTIPLIED_RGBA8)
+        .data;
 
     let mut png_data = Vec::new();
     let cursor = Cursor::new(&mut png_data);
     let encoder = PngEncoder::new(cursor);
     encoder
         .write_image(
-            bytemuck::cast_slice(&data),
+            &data,
             pixmap.width() as u32,
             pixmap.height() as u32,
             ExtendedColorType::Rgba8,

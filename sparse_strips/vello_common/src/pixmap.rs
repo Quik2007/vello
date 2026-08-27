@@ -8,11 +8,8 @@ use alloc::vec::Vec;
 #[cfg(feature = "png")]
 use std::io::{BufRead, Seek};
 
-use crate::fearless_simd::{Level, dispatch, mask8x16, prelude::*, u8x16, u16x16};
-use crate::peniko::{
-    ImageAlphaType,
-    color::{PremulRgba8, Rgba8},
-};
+use crate::fearless_simd::{Level, dispatch, mask8x16, prelude::*, u8x16, u8x32, u8x64, u16x16};
+use crate::peniko::{ImageAlphaType, color::PremulRgba8};
 use crate::util::{Div255Ext, narrow, unpremultiply, widen};
 
 #[cfg(feature = "png")]
@@ -310,12 +307,19 @@ impl Pixmap {
     /// Return the current content of the pixmap as a PNG.
     #[cfg(feature = "png")]
     pub fn into_png(self) -> Result<Vec<u8>, png::EncodingError> {
+        let width = u32::from(self.width);
+        let height = u32::from(self.height);
+        let pixels = self.take(PixelBufferOptions::RGB8);
+
         let mut data = Vec::new();
-        let mut encoder = png::Encoder::new(&mut data, self.width as u32, self.height as u32);
-        encoder.set_color(png::ColorType::Rgba);
+        let mut encoder = png::Encoder::new(&mut data, width, height);
+        encoder.set_color(match pixels.format {
+            PixelBufferFormat::Rgb8 => png::ColorType::Rgb,
+            PixelBufferFormat::Rgba8 => png::ColorType::Rgba,
+        });
         encoder.set_depth(png::BitDepth::Eight);
         let mut writer = encoder.write_header()?;
-        writer.write_image_data(bytemuck::cast_slice(&self.take_unpremultiplied()))?;
+        writer.write_image_data(&pixels.data)?;
         writer.finish().map(|_| data)
     }
 
@@ -389,22 +393,26 @@ impl Pixmap {
         self.buf[idx] = pixel;
     }
 
-    /// Consume the pixmap, returning the data as the underlying [`Vec`] of premultiplied RGBA8.
-    ///
-    /// The pixels are in row-major order.
-    pub fn take(self) -> Vec<PremulRgba8> {
-        self.buf
-    }
+    /// Consume the pixmap and return its raw pixel data.
+    pub fn take(mut self, options: PixelBufferOptions) -> PixelBuffer {
+        let may_have_transparency =
+            if self.may_have_transparency && options.alpha_type == ImageAlphaType::Alpha {
+                unpremultiply_rgba8(bytemuck::cast_slice_mut(&mut self.buf))
+            } else {
+                self.may_have_transparency
+            };
 
-    /// Consume the pixmap, returning the data as (unpremultiplied) RGBA8.
-    ///
-    /// The pixels are in row-major order.
-    pub fn take_unpremultiplied(mut self) -> Vec<Rgba8> {
-        if self.may_have_transparency {
-            unpremultiply_rgba8(bytemuck::cast_slice_mut(&mut self.buf));
-        }
+        let mut data = bytemuck::cast_vec(self.buf);
+        let format = match options.preferred_format {
+            PixelBufferFormat::Rgb8 if !may_have_transparency => {
+                rgba_to_rgb(&mut data);
 
-        bytemuck::cast_vec(self.buf)
+                PixelBufferFormat::Rgb8
+            }
+            _ => PixelBufferFormat::Rgba8,
+        };
+
+        PixelBuffer { data, format }
     }
 }
 
@@ -431,10 +439,132 @@ impl PixelMetadata {
     }
 }
 
+/// The byte layout of a [`PixelBuffer`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PixelBufferFormat {
+    /// Three bytes per pixel in red, green, blue order.
+    Rgb8,
+    /// Four bytes per pixel in red, green, blue, alpha order.
+    Rgba8,
+}
+
+/// Options controlling how a [`Pixmap`] is converted into a [`PixelBuffer`].
+///
+/// If any layout works, you should prefer using [`PixelBufferOptions::PREMULTIPLIED_RGBA8`], as
+/// this is the internal representation used by [`Pixmap`]. Choosing a different format might
+/// result in post-processing work being invoked.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PixelBufferOptions {
+    /// How the alpha channel should be represented in the returned data.
+    pub alpha_type: ImageAlphaType,
+    /// The preferred pixel format.
+    ///
+    /// If you choose [`PixelBufferFormat::Rgba8`], you will **always** get
+    /// an RGBA buffer.
+    /// If you choose [`PixelBufferFormat::Rgb8`], you **might** get an RGB buffer
+    /// **only if** the rendered pixmap is fully opaque. Otherwise, you will
+    /// still get an RGBA buffer.
+    pub preferred_format: PixelBufferFormat,
+}
+
+impl PixelBufferOptions {
+    /// Create pixel-buffer conversion options.
+    pub const fn new(alpha_type: ImageAlphaType, preferred_format: PixelBufferFormat) -> Self {
+        Self {
+            alpha_type,
+            preferred_format,
+        }
+    }
+
+    /// Options for premultiplied RGBA8 data.
+    pub const PREMULTIPLIED_RGBA8: Self =
+        Self::new(ImageAlphaType::AlphaPremultiplied, PixelBufferFormat::Rgba8);
+
+    /// Options for unpremultiplied RGBA8 data.
+    pub const UNPREMULTIPLIED_RGBA8: Self =
+        Self::new(ImageAlphaType::Alpha, PixelBufferFormat::Rgba8);
+
+    /// Options preferring RGB8 data, with unpremultiplied RGBA8 as the fallback.
+    pub const RGB8: Self = Self::new(ImageAlphaType::Alpha, PixelBufferFormat::Rgb8);
+}
+
+impl Default for PixelBufferOptions {
+    fn default() -> Self {
+        Self::PREMULTIPLIED_RGBA8
+    }
+}
+
+/// Raw pixel data extracted from a [`Pixmap`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PixelBuffer {
+    /// The pixel bytes in row-major order.
+    pub data: Vec<u8>,
+    /// The actual format of `data`.
+    pub format: PixelBufferFormat,
+}
+
 impl Default for PixelMetadata {
     fn default() -> Self {
         Self::new(ImageAlphaType::AlphaPremultiplied, true)
     }
+}
+
+/// Turn teh RGB buffer into an RGBA buffer, assuming that all pixels are fully
+/// opaque.
+fn rgba_to_rgb(data: &mut Vec<u8>) {
+    let level = Level::try_detect().unwrap_or(Level::baseline());
+
+    dispatch!(level, simd => rgba_to_rgb_impl(simd, data));
+}
+
+#[inline(always)]
+fn rgba_to_rgb_impl<S: Simd>(simd: S, data: &mut Vec<u8>) {
+    const SWIZZLE_0: [u8; 16] = [0, 1, 2, 4, 5, 6, 8, 9, 10, 12, 13, 14, 16, 17, 18, 20];
+    const SWIZZLE_1: [u8; 16] = [5, 6, 8, 9, 10, 12, 13, 14, 16, 17, 18, 20, 21, 22, 24, 25];
+    const SWIZZLE_2: [u8; 16] = [
+        10, 12, 13, 14, 16, 17, 18, 20, 21, 22, 24, 25, 26, 28, 29, 30,
+    ];
+
+    debug_assert!(
+        data.len().is_multiple_of(4),
+        "RGBA data length must be divisible by four"
+    );
+
+    let indices_0 = u8x32::from_fn(simd, |lane| SWIZZLE_0[lane.min(15)]);
+    let indices_1 = u8x32::from_fn(simd, |lane| SWIZZLE_1[lane.min(15)]);
+    let indices_2 = u8x32::from_fn(simd, |lane| SWIZZLE_2[lane.min(15)]);
+    let pixel_count = data.len() / 4;
+    let block_count = pixel_count / 16;
+
+    for block in 0..block_count {
+        let src = block * 64;
+        let dst = block * 48;
+        let rgba_0123 = u8x64::from_slice(simd, &data[src..src + 64]);
+        let (rgba_01, rgba_23) = rgba_0123.split();
+        let (_, rgba_1) = rgba_01.split();
+        let (rgba_2, _) = rgba_23.split();
+        let rgba_12 = rgba_1.combine(rgba_2);
+        let (rgb_0, _) = rgba_01.swizzle_dyn(indices_0).split();
+        let (rgb_1, _) = rgba_12.swizzle_dyn(indices_1).split();
+        let (rgb_2, _) = rgba_23.swizzle_dyn(indices_2).split();
+
+        rgb_0.store_slice(&mut data[dst..dst + 16]);
+        rgb_1.store_slice(&mut data[dst + 16..dst + 32]);
+        rgb_2.store_slice(&mut data[dst + 32..dst + 48]);
+    }
+
+    for pixel in block_count * 16..pixel_count {
+        let src = pixel * 4;
+        let dst = pixel * 3;
+        let r = data[src];
+        let g = data[src + 1];
+        let b = data[src + 2];
+        data[dst] = r;
+        data[dst + 1] = g;
+        data[dst + 2] = b;
+    }
+
+    data.truncate(pixel_count * 3);
 }
 
 /// Premultiplies each RGBA8 pixel in `data`.
@@ -451,18 +581,22 @@ fn premultiply_rgba8(data: &mut [u8]) -> bool {
 }
 
 /// Unpremultiplies each RGBA8 pixel in `data`.
-fn unpremultiply_rgba8(data: &mut [u8]) {
+///
+/// Returns `true` if at least one pixel is not fully opaque.
+fn unpremultiply_rgba8(data: &mut [u8]) -> bool {
     let level = Level::try_detect().unwrap_or(Level::baseline());
 
-    dispatch!(level, simd => unpremultiply_rgba8_impl(simd, data));
+    dispatch!(level, simd => unpremultiply_rgba8_impl(simd, data))
 }
 
 #[inline(always)]
-fn unpremultiply_rgba8_impl<S: Simd>(simd: S, data: &mut [u8]) {
+fn unpremultiply_rgba8_impl<S: Simd>(simd: S, data: &mut [u8]) -> bool {
     let (body, tail) = data.as_chunks_mut::<64>();
+    let mut transparency = mask8x16::splat(simd, false);
 
     for chunk in body {
         let [r, g, b, a] = simd.load_four_interleaved_u8x16(chunk);
+        transparency |= !a.simd_eq(255);
         let reciprocal = u16x16::from_fn(simd, |lane| unpremultiply::reciprocal(a[lane]));
         let r = unpremultiply::simd(simd, r, reciprocal);
         let g = unpremultiply::simd(simd, g, reciprocal);
@@ -471,12 +605,16 @@ fn unpremultiply_rgba8_impl<S: Simd>(simd: S, data: &mut [u8]) {
         simd.store_four_interleaved_u8x16([r, g, b, a], chunk);
     }
 
+    let mut may_have_transparency = transparency.any_true();
     for pixel in tail.chunks_exact_mut(4) {
+        may_have_transparency |= pixel[3] != 255;
         let reciprocal = unpremultiply::reciprocal(pixel[3]);
         for component in &mut pixel[..3] {
             *component = unpremultiply::scalar(*component, reciprocal);
         }
     }
+
+    may_have_transparency
 }
 
 #[inline(always)]
@@ -514,8 +652,9 @@ fn premultiply_rgba8_impl<S: Simd>(simd: S, data: &mut [u8]) -> bool {
 #[cfg(test)]
 mod tests {
     use alloc::vec;
+    use alloc::vec::Vec;
 
-    use super::{PixelMetadata, Pixmap};
+    use super::{PixelBufferFormat, PixelBufferOptions, PixelMetadata, Pixmap};
     use crate::peniko::ImageAlphaType;
 
     #[test]
@@ -594,5 +733,65 @@ mod tests {
 
         assert!(!pixmap.may_have_transparency());
         assert_eq!(pixmap.data_as_u8_slice(), data);
+    }
+
+    #[test]
+    fn opaque_pixmap_compacts_to_rgb() {
+        let rgba: Vec<u8> = (0_u8..33)
+            .flat_map(|pixel| {
+                [
+                    pixel.wrapping_mul(3),
+                    pixel.wrapping_mul(5),
+                    pixel.wrapping_mul(7),
+                    255,
+                ]
+            })
+            .collect();
+        let expected: Vec<u8> = rgba
+            .chunks_exact(4)
+            .flat_map(|pixel| pixel[..3].iter().copied())
+            .collect();
+        let pixmap = Pixmap::from_parts(
+            rgba,
+            33,
+            1,
+            PixelMetadata::new(ImageAlphaType::AlphaPremultiplied, false),
+        );
+
+        let pixels = pixmap.take(PixelBufferOptions::RGB8);
+
+        assert_eq!(pixels.format, PixelBufferFormat::Rgb8);
+        assert_eq!(pixels.data, expected);
+    }
+
+    #[test]
+    fn transparent_pixmap_falls_back_to_rgba() {
+        let pixmap = Pixmap::from_parts(
+            vec![64, 32, 16, 128],
+            1,
+            1,
+            PixelMetadata::new(ImageAlphaType::AlphaPremultiplied, true),
+        );
+
+        let pixels = pixmap.take(PixelBufferOptions::RGB8);
+
+        assert_eq!(pixels.format, PixelBufferFormat::Rgba8);
+        assert_eq!(pixels.data, [128, 64, 32, 128]);
+    }
+
+    #[test]
+    fn rgba_preserves_premultiplied_data() {
+        let data = vec![64, 32, 16, 128];
+        let pixmap = Pixmap::from_parts(
+            data.clone(),
+            1,
+            1,
+            PixelMetadata::new(ImageAlphaType::AlphaPremultiplied, true),
+        );
+
+        let pixels = pixmap.take(PixelBufferOptions::PREMULTIPLIED_RGBA8);
+
+        assert_eq!(pixels.format, PixelBufferFormat::Rgba8);
+        assert_eq!(pixels.data, data);
     }
 }

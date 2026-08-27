@@ -3,7 +3,7 @@
 
 use criterion::{BatchSize, Criterion, black_box};
 use vello_common::peniko::ImageAlphaType;
-use vello_common::pixmap::{PixelMetadata, Pixmap};
+use vello_common::pixmap::{PixelBufferOptions, PixelMetadata, Pixmap};
 
 const WIDTH: u16 = 1920;
 const HEIGHT: u16 = 1080;
@@ -61,11 +61,27 @@ pub fn pixmap(c: &mut Criterion) {
         group.bench_function(*name, |b| {
             b.iter_batched(
                 || pixmap.clone(),
-                |pixmap| black_box(pixmap.take_unpremultiplied()),
+                |pixmap| black_box(pixmap.take(PixelBufferOptions::UNPREMULTIPLIED_RGBA8)),
                 BatchSize::LargeInput,
             );
         });
     }
+    group.finish();
+
+    let opaque_pixmap = Pixmap::from_parts(
+        OPAQUE_BLUE.repeat(pixel_count),
+        WIDTH,
+        HEIGHT,
+        PixelMetadata::new(ImageAlphaType::AlphaPremultiplied, false),
+    );
+    let mut group = c.benchmark_group("pixmap/rgba_to_rgb");
+    group.bench_function("opaque", |b| {
+        b.iter_batched(
+            || opaque_pixmap.clone(),
+            |pixmap| black_box(pixmap.take(PixelBufferOptions::RGB8)),
+            BatchSize::LargeInput,
+        );
+    });
     group.finish();
 }
 

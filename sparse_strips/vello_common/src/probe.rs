@@ -14,7 +14,7 @@ use crate::peniko::{
     BlendMode, ColorStop, ColorStops, Compose, Extend, Gradient, ImageQuality, ImageSampler,
     LinearGradientPosition, Mix,
 };
-use crate::pixmap::Pixmap;
+use crate::pixmap::{PixelBufferOptions, Pixmap};
 use alloc::vec::Vec;
 
 const REFERENCE_RGBA: &[u8] = include_bytes!("../assets/probe.rgba");
@@ -207,7 +207,7 @@ impl ProbeImage {
         Self {
             width: pixmap.width(),
             height: pixmap.height(),
-            data: bytemuck::cast_slice(&pixmap.take_unpremultiplied()).to_vec(),
+            data: pixmap.take(PixelBufferOptions::UNPREMULTIPLIED_RGBA8).data,
         }
     }
 }

@@ -3,7 +3,6 @@
 
 //! Regenerate the probe reference assets in `vello_common/assets`.
 
-use bytemuck::cast_slice;
 use std::{
     path::PathBuf,
     sync::{Arc, LazyLock},
@@ -16,7 +15,7 @@ use vello_common::{
     kurbo::{Affine, BezPath, Rect},
     paint::{ImageSource, PaintType},
     peniko::BlendMode,
-    pixmap::Pixmap,
+    pixmap::{PixelBufferOptions, Pixmap},
     probe::{self, ProbeRenderer},
 };
 use vello_cpu::{Level, RasterizerSettings, RenderContext, RenderMode, RenderSettings, Resources};
@@ -102,7 +101,10 @@ fn render_probe_pixmap() -> Pixmap {
 
 fn build_probe_reference_data() -> ProbeReferenceData {
     let pixmap = render_probe_pixmap();
-    let rgba = cast_slice(&pixmap.clone().take_unpremultiplied()).to_vec();
+    let rgba = pixmap
+        .clone()
+        .take(PixelBufferOptions::UNPREMULTIPLIED_RGBA8)
+        .data;
     let png = pixmap.into_png().unwrap();
     #[cfg(not(target_arch = "wasm32"))]
     let png = oxipng::optimize_from_memory(&png, &Options::max_compression()).unwrap();
