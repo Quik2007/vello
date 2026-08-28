@@ -509,7 +509,7 @@ impl Default for PixelMetadata {
     }
 }
 
-/// Turn teh RGB buffer into an RGBA buffer, assuming that all pixels are fully
+/// Turn the RGB buffer into an RGBA buffer, assuming that all pixels are fully
 /// opaque.
 fn rgba_to_rgb(data: &mut Vec<u8>) {
     let level = Level::try_detect().unwrap_or(Level::baseline());
