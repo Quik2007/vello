@@ -951,7 +951,7 @@ mod tests {
     fn zero_area_external_texture_rect_is_a_noop() {
         let mut scene = Scene::new(100, 100);
         scene.set_paint(Image {
-            image: ImageSource::external_texture(TextureId(7), RectU16::new(0, 0, 8, 8), false),
+            image: ImageSource::external_texture(TextureId::new(), RectU16::new(0, 0, 8, 8), false),
             sampler: ImageSampler::default(),
         });
 

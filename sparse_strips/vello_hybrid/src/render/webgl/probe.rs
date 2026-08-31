@@ -81,7 +81,6 @@ impl WebGlRenderer {
                 framebuffer: true,
                 active_texture: true,
                 texture_2d: true,
-                texture_2d_array: true,
                 pixel_pack_buffer: true,
                 viewport: true,
                 ..Default::default()
@@ -135,7 +134,7 @@ impl WebGlRenderer {
             )
             .unwrap();
 
-        let probe_texture_id = TextureId(0);
+        let probe_texture_id = TextureId::new();
         let mut texture_bindings = WebGlTextureBindings::new();
         texture_bindings.insert(probe_texture_id, probe_image_texture.deref().clone());
         let mut scene = Scene::new(width, height);

@@ -6,6 +6,7 @@
 use crate::util::pack_u16_pair;
 use vello_common::TextureId;
 use vello_common::encode::{EncodedKind, EncodedPaint};
+use vello_common::image_cache::ImageCache;
 use vello_common::paint::{ImageSource, Paint};
 
 const COLOR_SOURCE_PAYLOAD: u32 = 0;
@@ -62,6 +63,10 @@ pub(crate) struct PaintResolver<'a> {
     encoded: &'a [EncodedPaint],
     /// GPU data offset corresponding to each encoded paint.
     gpu_offsets: &'a [u32],
+    /// Resolves internal images to their atlas textures.
+    image_cache: Option<&'a ImageCache>,
+    /// External texture ID for each renderer-owned atlas.
+    atlas_texture_ids: Option<&'a [TextureId]>,
 }
 
 impl<'a> PaintResolver<'a> {
@@ -69,7 +74,20 @@ impl<'a> PaintResolver<'a> {
         Self {
             encoded,
             gpu_offsets,
+            image_cache: None,
+            atlas_texture_ids: None,
         }
+    }
+
+    /// Add the image cache needed to resolve internal image paints.
+    pub(crate) fn with_image_cache(
+        mut self,
+        image_cache: &'a ImageCache,
+        atlas_texture_ids: &'a [TextureId],
+    ) -> Self {
+        self.image_cache = Some(image_cache);
+        self.atlas_texture_ids = Some(atlas_texture_ids);
+        self
     }
 
     #[inline]
@@ -90,7 +108,12 @@ impl<'a> PaintResolver<'a> {
                 let (paint_type, external_texture_id) = match encoded_paint {
                     EncodedPaint::Image(encoded_image) => match &encoded_image.source {
                         ImageSource::ExternalTexture { id, .. } => (PAINT_TYPE_IMAGE, Some(*id)),
-                        ImageSource::OpaqueId { .. } => (PAINT_TYPE_IMAGE, None),
+                        ImageSource::OpaqueId { id, .. } => {
+                            let image_resource = self.image_cache.unwrap().get(*id).unwrap();
+                            let external_texture_id = self.atlas_texture_ids.unwrap()
+                                [image_resource.atlas_id.as_u32() as usize];
+                            (PAINT_TYPE_IMAGE, Some(external_texture_id))
+                        }
                         ImageSource::Pixmap(_) => unimplemented!("Unsupported image source"),
                     },
                     EncodedPaint::Gradient(gradient) => {

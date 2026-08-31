@@ -27,7 +27,7 @@ use vello_common::util::Clear;
 pub(crate) struct Draw {
     /// Ranges selecting this draw's strips from [`DrawBuffers::strips`].
     pub(crate) strip_ranges: Ranges,
-    /// Runs that require an externally supplied texture binding.
+    /// Runs that require external texture bindings.
     pub(crate) external_texture_runs: Vec<ExternalTextureRun>,
     /// Whether any strip in this draw samples a child layer.
     pub(crate) has_child_layer: bool,
@@ -450,7 +450,7 @@ impl LayerTextureRegion {
     }
 }
 
-/// Number of externally supplied textures that can be sampled by one strip draw.
+/// Number of external textures that can be sampled by one strip draw.
 pub(crate) const EXTERNAL_TEXTURE_SLOT_COUNT: usize = 4;
 
 /// External texture bindings for one strip draw.
@@ -587,7 +587,9 @@ mod tests {
     use vello_common::TextureId;
     use vello_common::encode::{EncodedImage, EncodedPaint};
     use vello_common::geometry::RectU16;
+    use vello_common::image_cache::ImageCache;
     use vello_common::kurbo::{Affine, Rect, Vec2};
+    use vello_common::multi_atlas::AtlasConfig;
     use vello_common::paint::{ImageId, ImageSource, IndexedPaint, Paint, PremulColor};
     use vello_common::peniko::color::palette::css::BLUE;
     use vello_common::peniko::{Extend, ImageQuality, ImageSampler};
@@ -697,9 +699,9 @@ mod tests {
         })
     }
 
-    fn atlas_image() -> EncodedPaint {
+    fn atlas_image(image_id: ImageId) -> EncodedPaint {
         EncodedPaint::Image(EncodedImage {
-            source: ImageSource::opaque_id(ImageId::new(0)),
+            source: ImageSource::opaque_id(image_id),
             sampler: ImageSampler {
                 x_extend: Extend::Pad,
                 y_extend: Extend::Pad,
@@ -726,8 +728,8 @@ mod tests {
 
     #[test]
     fn texture_runs() {
-        let texture_a = TextureId(10);
-        let texture_b = TextureId(20);
+        let texture_a = TextureId::new();
+        let texture_b = TextureId::new();
         let encoded = [external(texture_a), external(texture_b)];
         let offsets = [0, 0];
         let resolver = PaintResolver::new(&encoded, &offsets);
@@ -751,13 +753,7 @@ mod tests {
 
     #[test]
     fn fifth_external_texture_starts_a_fresh_run() {
-        let textures = [
-            TextureId(10),
-            TextureId(20),
-            TextureId(30),
-            TextureId(40),
-            TextureId(50),
-        ];
+        let textures: [TextureId; 5] = core::array::from_fn(|_| TextureId::new());
         let encoded = textures.map(external);
         let offsets = [0; 5];
         let resolver = PaintResolver::new(&encoded, &offsets);
@@ -800,7 +796,7 @@ mod tests {
 
     #[test]
     fn texture_runs_coalesce_distinct_paints_for_same_texture() {
-        let texture = TextureId(10);
+        let texture = TextureId::new();
         let encoded = [external(texture), external(texture)];
         let resolver = PaintResolver::new(&encoded, &[0, 3]);
         let mut case = DrawCase::new(RootTarget::UserSurface, RectU16::new(0, 0, 8, 8));
@@ -816,10 +812,15 @@ mod tests {
     }
 
     #[test]
-    fn texture_runs_collapse_across_atlas_images() {
-        let texture = TextureId(10);
-        let encoded = [external(texture), atlas_image()];
-        let resolver = PaintResolver::new(&encoded, &[0, 0]);
+    fn texture_runs_include_atlas_images() {
+        let texture = TextureId::new();
+        let mut image_cache = ImageCache::new_with_config(AtlasConfig::default());
+        let image_id = image_cache.allocate(1, 1, 0).unwrap();
+        let encoded = [external(texture), atlas_image(image_id)];
+        let atlas_texture = TextureId::new();
+        let atlas_texture_ids = [atlas_texture];
+        let resolver = PaintResolver::new(&encoded, &[0, 0])
+            .with_image_cache(&image_cache, &atlas_texture_ids);
         let mut case = DrawCase::new(RootTarget::UserSurface, RectU16::new(0, 0, 16, 8));
         let mut draw = Draw::default();
 
@@ -828,26 +829,16 @@ mod tests {
         }
 
         assert_eq!(draw.strip_ranges.len(), 3);
-        // Images in the atlas are handled separately from external textures, so
-        // it's fine to collapse them.
         assert_eq!(
-            run_states(&draw.external_texture_runs),
-            [([Some(texture), None, None, None], 0)]
+            draw.external_texture_runs[0].bindings.as_array(),
+            [Some(texture), Some(atlas_texture), None, None,]
         );
+        assert_eq!(draw.external_texture_runs[0].strips_start, 0);
     }
 
     #[test]
     fn opaque_reverse_rebases_texture_runs() {
-        let textures = [
-            TextureId(10),
-            TextureId(20),
-            TextureId(30),
-            TextureId(40),
-            TextureId(50),
-            TextureId(60),
-            TextureId(70),
-            TextureId(80),
-        ];
+        let textures: [TextureId; 8] = core::array::from_fn(|_| TextureId::new());
         let mut draw = OpaqueDraw::default();
 
         for (x, texture_id) in [
@@ -960,7 +951,7 @@ mod tests {
 
     #[test]
     fn draw_clear() {
-        let texture_id = TextureId(10);
+        let texture_id = TextureId::new();
         let encoded = [external(texture_id)];
         let offsets = [0];
         let resolver = PaintResolver::new(&encoded, &offsets);

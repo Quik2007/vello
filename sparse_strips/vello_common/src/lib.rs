@@ -63,6 +63,8 @@ extern crate alloc;
 #[cfg(feature = "std")]
 extern crate std;
 
+use core::sync::atomic::{AtomicU64, Ordering};
+
 pub mod blurred_rounded_rect;
 pub mod clip;
 pub mod encode;
@@ -104,4 +106,27 @@ pub use peniko::kurbo;
 /// This is resolved at render time by passing in a mapping of handles to textures, but is
 /// otherwise opaque to the renderer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct TextureId(pub u64);
+pub struct TextureId(u64);
+
+impl TextureId {
+    /// Allocate a new globally unique texture ID.
+    #[expect(clippy::new_without_default, reason = "better to be explicit here")]
+    pub fn new() -> Self {
+        static NEXT_TEXTURE_ID: AtomicU64 = AtomicU64::new(0);
+
+        let id = NEXT_TEXTURE_ID
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |id| id.checked_add(1))
+            .expect("texture ID space exhausted");
+        Self(id)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::TextureId;
+
+    #[test]
+    fn texture_ids_are_unique() {
+        assert_ne!(TextureId::new(), TextureId::new());
+    }
+}

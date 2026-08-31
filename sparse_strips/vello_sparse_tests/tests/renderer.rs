@@ -283,7 +283,6 @@ pub(crate) struct HybridRenderer {
     depth_texture_view: Option<wgpu::TextureView>,
     renderer: vello_hybrid::Renderer,
     external_textures: HashMap<TextureId, wgpu::TextureView>,
-    next_external_texture_id: u64,
 }
 
 #[cfg(not(all(target_arch = "wasm32", feature = "webgl")))]
@@ -355,7 +354,6 @@ impl HybridRenderer {
             depth_texture_view,
             renderer,
             external_textures: HashMap::new(),
-            next_external_texture_id: 1,
         }
     }
 
@@ -661,8 +659,7 @@ impl Renderer for HybridRenderer {
     }
 
     fn register_external_texture(&mut self, pixmap: Arc<Pixmap>) -> TextureId {
-        let texture_id = TextureId(self.next_external_texture_id);
-        self.next_external_texture_id += 1;
+        let texture_id = TextureId::new();
 
         let width = u32::from(pixmap.width());
         let height = u32::from(pixmap.height());
@@ -721,7 +718,6 @@ pub(crate) struct HybridRenderer {
     renderer: vello_hybrid::WebGlRenderer,
     gl: WebGl2RenderingContext,
     external_textures: vello_hybrid::WebGlTextureBindings,
-    next_external_texture_id: u64,
 }
 
 #[cfg(all(target_arch = "wasm32", feature = "webgl"))]
@@ -793,7 +789,6 @@ impl Renderer for HybridRenderer {
             renderer,
             gl,
             external_textures: vello_hybrid::WebGlTextureBindings::new(),
-            next_external_texture_id: 1,
         }
     }
 
@@ -972,8 +967,7 @@ impl Renderer for HybridRenderer {
     }
 
     fn register_external_texture(&mut self, pixmap: Arc<Pixmap>) -> TextureId {
-        let texture_id = TextureId(self.next_external_texture_id);
-        self.next_external_texture_id += 1;
+        let texture_id = TextureId::new();
 
         let texture = self.gl.create_texture().unwrap();
         self.gl

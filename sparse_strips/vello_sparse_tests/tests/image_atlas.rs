@@ -10,7 +10,7 @@ use wasm_bindgen_test::*;
 use web_sys::{HtmlCanvasElement, WebGl2RenderingContext};
 
 #[wasm_bindgen_test]
-fn image_atlas_placeholder_is_promoted_on_first_upload() {
+fn image_atlas_texture_is_created_on_first_upload() {
     let document = web_sys::window().unwrap().document().unwrap();
     let canvas = document
         .create_element("canvas")
@@ -37,11 +37,11 @@ fn image_atlas_placeholder_is_promoted_on_first_upload() {
     assert_eq!(
         renderer.atlas_info(),
         AtlasTextureInfo {
-            width: 1,
-            height: 1,
-            layer_count: 0,
+            width: 10,
+            height: 10,
+            texture_count: 0,
         },
-        "renderer should start with only the 1x1 placeholder atlas texture"
+        "renderer should start without allocated atlas textures"
     );
     assert_eq!(
         renderer.gl_context().get_error(),
@@ -56,9 +56,9 @@ fn image_atlas_placeholder_is_promoted_on_first_upload() {
         AtlasTextureInfo {
             width: 10,
             height: 10,
-            layer_count: 1,
+            texture_count: 1,
         },
-        "first upload should promote the placeholder to the configured atlas"
+        "first upload should allocate the first configured atlas texture"
     );
     assert_eq!(
         renderer.gl_context().get_error(),
@@ -70,8 +70,8 @@ fn image_atlas_placeholder_is_promoted_on_first_upload() {
 /// Uploading an image that is larger than the configured atlas must fail with
 /// `AtlasError::TextureTooLarge`.
 ///
-/// The renderer constructor configures both the 10x10 GPU atlas texture and the allocator in the
-/// returned resources, which runs the `TextureTooLarge` check.
+/// The renderer constructor configures the allocator in the returned resources, which runs the
+/// `TextureTooLarge` check.
 #[wasm_bindgen_test]
 #[should_panic(expected = "TextureTooLarge")]
 fn image_atlas_upload_larger_than_atlas_fails() {

@@ -379,7 +379,7 @@ impl ApplicationHandler for App<'_> {
                 let mut texture_bindings = TextureBindings::new();
                 if let Some(texture) = self.spritesheet_textures[surface.dev_id].as_ref() {
                     texture_bindings.insert(
-                        SPRITESHEET_TEXTURE_ID,
+                        *SPRITESHEET_TEXTURE_ID,
                         texture.create_view(&wgpu::TextureViewDescriptor::default()),
                     );
                 }
